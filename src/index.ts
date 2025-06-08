@@ -1,6 +1,11 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { config } from './config.js';
+import {
+    NotFoundError,
+    BadRequestError,
+    InternalServerError,
+} from './errors.js';
 
 const app = express();
 const PORT = 8080;
@@ -9,11 +14,37 @@ app.use('/app', middlewareMetricsInc, express.static('./src/app'));
 
 app.use(middlewareLogResponses);
 
-app.get('/api/healthz', handlerReadiness);
-app.post('/api/validate_chirp', handlerValidateChirp);
-app.get('/admin/metrics', handlerMetrics);
-app.post('/admin/reset', handlerResetMetrics);
+app.get('/api/healthz', async (req, res, next) => {
+    try {
+        await handlerReadiness(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+app.post('/api/validate_chirp', async (req, res, next) => {
+    try {
+        await handlerValidateChirp(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+app.get('/admin/metrics', async (req, res, next) => {
+    try {
+        await handlerMetrics(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+app.post('/admin/reset', async (req, res, next) => {
+    try {
+        await handlerResetMetrics(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
 
+// Error handler must be last
+app.use(errorHandler);
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
@@ -48,43 +79,64 @@ async function handlerValidateChirp(
         cleanedBody: string;
         error?: string;
     };
-    try {
-        const { body } = req.body;
-        if (body.length > 140) {
-            const errorBody: responseData = {
-                cleanedBody: '',
-                error: 'Chirp is too long',
-            };
-            res.status(400).send(JSON.stringify(errorBody));
-        } else {
-            const strArray = body.split(' ');
-            const cleanedArray = strArray.map((str: string) => {
-                if (
-                    str.toLowerCase() === 'kerfuffle' ||
-                    str.toLowerCase() === 'sharbert' ||
-                    str.toLowerCase() === 'fornax'
-                ) {
-                    return '****';
-                }
-                return str;
-            });
-            const cleanedBody = cleanedArray.join(' ');
 
-            res.header('Content-Type', 'application/json');
-            const successBody: responseData = {
-                cleanedBody: cleanedBody,
-            };
-            res.status(200).send(JSON.stringify(successBody));
-        }
-    } catch (error) {
-        res.status(500).send(
-            JSON.stringify({
-                cleanedBody: '',
-                error: 'Something went wrong',
-            }),
-        );
+    const { body } = req.body;
+    if (body.length > 140) {
+        throw new BadRequestError('Chirp is too long. Max length is 140');
+        // const errorBody: responseData = {
+        //     cleanedBody: '',
+        //     error: 'Chirp is too long',
+        // };
+        // res.status(400).send(JSON.stringify(errorBody));
+    } else {
+        const strArray = body.split(' ');
+        const cleanedArray = strArray.map((str: string) => {
+            if (
+                str.toLowerCase() === 'kerfuffle' ||
+                str.toLowerCase() === 'sharbert' ||
+                str.toLowerCase() === 'fornax'
+            ) {
+                return '****';
+            }
+            return str;
+        });
+        const cleanedBody = cleanedArray.join(' ');
+
+        res.header('Content-Type', 'application/json');
+        const successBody: responseData = {
+            cleanedBody: cleanedBody,
+        };
+        res.status(200).send(JSON.stringify(successBody));
     }
 }
+// Error handler
+
+async function errorHandler(
+    err: Error,
+    req: Request,
+    res: Response,
+    next: NextFunction,
+): Promise<void> {
+    console.error(err);
+    if (err instanceof NotFoundError) {
+        res.status(404).json({
+            error: err.message,
+        });
+    } else if (err instanceof BadRequestError) {
+        res.status(400).json({
+            error: err.message,
+        });
+    } else if (err instanceof InternalServerError) {
+        res.status(500).json({
+            error: err.message,
+        });
+    } else {
+        res.status(500).json({
+            error: 'Something went wrong on our end. Please try again later.',
+        });
+    }
+}
+
 // Middleware
 async function middlewareLogResponses(
     req: Request,
