@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { BadRequestError } from './errors.js';
-import { createChirp } from '../db/queries/chirps.js';
+import { createChirp, getAllChirps } from '../db/queries/chirps.js';
 
 export async function handlerCreateChirp(
     req: Request,
@@ -41,4 +41,9 @@ export async function handlerCreateChirp(
 
         res.status(201).send(JSON.stringify(response));
     }
+}
+
+export async function handlerGetAllChirps(req: Request, res: Response) {
+    const chirps = await getAllChirps();
+    res.status(200).send(JSON.stringify(chirps));
 }

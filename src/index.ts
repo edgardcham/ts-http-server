@@ -5,7 +5,7 @@ import {
     middlewareMetricsInc,
 } from './api/middlewares.js';
 import { handlerReadiness } from './api/readiness.js';
-import { handlerCreateChirp } from './api/chirps.js';
+import { handlerCreateChirp, handlerGetAllChirps } from './api/chirps.js';
 import { handlerMetrics, handlerResetMetrics } from './api/metrics.js';
 import { errorHandler } from './api/errorHandler.js';
 import { handlerAddUser } from './api/users.js';
@@ -61,6 +61,14 @@ app.post('/api/users', async (req, res, next) => {
 app.post('/api/chirps', async (req, res, next) => {
     try {
         await handlerCreateChirp(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/chirps', async (req, res, next) => {
+    try {
+        await handlerGetAllChirps(req, res);
     } catch (error) {
         next(error);
     }

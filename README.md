@@ -6,16 +6,18 @@ Welcome to **Chirpy** - a TypeScript-based HTTP server project designed for lear
 
 ## 🎯 What We're Building
 
-Chirpy is a lightweight server that handles "chirps" (think tweets) with content validation and profanity filtering. It's a perfect starting point for understanding:
+Chirpy is a full-featured social media API that handles user registration and "chirps" (think tweets) with content validation and profanity filtering. The project now includes complete database integration and demonstrates:
 
 - TypeScript in a Node.js environment
 - Express.js middleware patterns
-- RESTful API design
+- RESTful API design with proper resource naming
 - Error handling best practices
 - Static file serving
 - Server metrics tracking
 - Database integration with Drizzle ORM
 - PostgreSQL schema design and migrations
+- Automatic database migrations
+- Type-safe database operations
 
 ## 📚 Learning Goals
 
@@ -33,10 +35,11 @@ Through this project, you'll learn:
    - Error middleware
 
 3. **API Design**
-   - RESTful endpoints
+   - RESTful endpoints (note: using pluralized nouns even for single resources)
    - Request validation
    - JSON responses
    - Status code management
+   - Data transformation (database snake_case to API camelCase)
 
 4. **Development Workflow**
    - Build processes
@@ -48,20 +51,34 @@ Through this project, you'll learn:
    - PostgreSQL schema design
    - Type-safe database operations
    - Migration management
+   - Automatic database migrations on server startup
+   - Foreign key relationships and constraints
 
 ## 🏗️ Project Structure
 
 ```bash
 ts-http-server/
 ├── src/                  # Source code
+│   ├── api/             # API handlers and middleware
+│   │   ├── chirps.ts    # Chirp creation endpoint
+│   │   ├── users.ts     # User management endpoint
+│   │   ├── errorHandler.ts # Centralized error handling
+│   │   ├── errors.ts    # Custom error classes
+│   │   ├── metrics.ts   # Admin metrics handlers
+│   │   ├── middlewares.ts # Request logging and metrics
+│   │   └── readiness.ts # Health check endpoint
 │   ├── app/             # Static web assets
 │   │   ├── assets/      # Images and static resources
 │   │   └── index.html   # Welcome page
-│   ├── db/              # Database related files
+│   ├── db/              # Database layer
 │   │   ├── schema.ts    # Drizzle ORM schema definitions
-│   │   └── migrations/  # Database migration files
-│   ├── config.ts        # Application state management
-│   ├── errors.ts        # Custom error classes
+│   │   ├── index.ts     # Database connection
+│   │   ├── migrations/  # Auto-generated migration files
+│   │   └── queries/     # Database query functions
+│   │       ├── users.ts
+│   │       ├── chirps.ts
+│   │       └── admin.ts
+│   ├── config.ts        # Enhanced configuration with env vars
 │   └── index.ts         # Main server entry point
 ├── dist/                # Compiled JavaScript (generated)
 ├── drizzle.config.ts    # Drizzle ORM configuration
@@ -71,19 +88,22 @@ ts-http-server/
 
 ## 🔌 API Endpoints
 
+> **RESTful Convention**: All endpoints use **pluralized nouns** (e.g., `/users`, `/chirps`) even when operating on a single resource. This follows REST best practices for consistent URL structure.
+
 ### Public Endpoints
 
-| Method | Endpoint | Description | Response |
-|--------|----------|-------------|----------|
-| GET | `/api/healthz` | Health check | `200 OK` |
-| POST | `/api/validate_chirp` | Validate and clean chirp content | `200` with cleaned content or `400` if invalid |
+| Method | Endpoint | Description | Request Body | Response |
+|--------|----------|-------------|--------------|----------|
+| GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
+| POST | `/api/users` | Create a new user account | `{"email": "user@example.com"}` | `201` with user object |
+| POST | `/api/chirps` | Create a new chirp | `{"body": "Hello world!", "userId": "uuid"}` | `201` with chirp object |
 
 ### Admin Endpoints
 
 | Method | Endpoint | Description | Response |
 |--------|----------|-------------|----------|
-| GET | `/admin/metrics` | View server metrics | HTML page with visit count |
-| POST | `/admin/reset` | Reset metrics counter | `200 OK` |
+| GET | `/admin/metrics` | View server visit metrics | HTML page with visit count |
+| POST | `/admin/reset` | Reset metrics counter & delete all users | `200 OK` |
 
 ### Static Files
 
@@ -127,11 +147,13 @@ The server will start on `http://localhost:8080`
 
 ### Database Setup
 
-First, create a `.env` file in the project root:
+First, create a `.env` file in the project root with all required environment variables:
 
 ```bash
 # .env
 DB_URL=postgres://postgres:password@localhost:5432/chirpy
+PORT=8080
+PLATFORM=dev
 ```
 
 Then run the database commands:
@@ -140,43 +162,59 @@ Then run the database commands:
 # Generate database migrations from schema
 npm run db:generate
 
-# Apply migrations to database
+# Apply migrations to database (optional - migrations run automatically on server start)
 npm run db:migrate
 ```
 
+**Note**: Database migrations now run **automatically** when the server starts, so manual migration is optional for development.
+
 ## 💡 Key Features Explained
 
-### 1. Content Validation
+### 1. User Management
 
-The `/api/validate_chirp` endpoint demonstrates input validation:
+Create users with email validation:
+
+```bash
+curl -X POST http://localhost:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com"}'
+```
+
+### 2. Chirp Creation with Content Validation
+
+The `/api/chirps` endpoint demonstrates comprehensive input validation:
 
 - Maximum 140 characters
 - Profanity filtering (replaces inappropriate words with `****`)
+- User ID validation (must exist in database)
 - JSON request/response handling
 
 **Example Request:**
 
 ```bash
-curl -X POST http://localhost:8080/api/validate_chirp \
+curl -X POST http://localhost:8080/api/chirps \
   -H "Content-Type: application/json" \
-  -d '{"body": "Hello world! This is my first chirp!"}'
+  -d '{"body": "Hello world! This is my first chirp!", "userId": "user-uuid-here"}'
 ```
 
-### 2. Custom Error Handling
+### 3. Custom Error Handling
 
 The project implements a clean error handling pattern:
 
 ```typescript
-// Custom error classes in errors.ts
+// Custom error classes in api/errors.ts
 class BadRequestError extends Error {
   statusCode = 400
 }
+class ForbiddenError extends Error {
+  statusCode = 403
+}
 
-// Centralized error handler in index.ts
+// Centralized error handler in api/errorHandler.ts
 app.use(errorHandler)
 ```
 
-### 3. Middleware Architecture
+### 4. Middleware Architecture
 
 Three key middleware functions demonstrate different patterns:
 
@@ -184,7 +222,18 @@ Three key middleware functions demonstrate different patterns:
 2. **`middlewareMetricsInc`** - Tracks page visits
 3. **`errorHandler`** - Centralized error handling
 
-### 4. Configuration Management
+### 5. Automatic Database Migrations
+
+Migrations run automatically when the server starts:
+
+```typescript
+// In index.ts - runs before server startup
+const migrationClient = postgres(config.db.url, { max: 1 });
+await migrate(drizzle(migrationClient), config.db.migrationConfig);
+console.log('✅ Database migrations completed');
+```
+
+### 6. Configuration Management
 
 Enhanced configuration with environment variables in `config.ts`:
 
@@ -193,9 +242,16 @@ import { loadEnvFile } from 'node:process';
 
 loadEnvFile(); // Loads .env file
 
-export const config: APIConfig = {
-    fileServerHits: 0,
-    dbUrl: envOrThrow('DB_URL'), // Ensures required env vars are set
+export const config: Config = {
+    api: {
+        fileServerHits: 0,
+        port: Number(envOrThrow('PORT')),
+        platform: envOrThrow('PLATFORM'),
+    },
+    db: {
+        url: envOrThrow('DB_URL'),
+        migrationConfig: migrationConfig,
+    },
 };
 ```
 
@@ -203,9 +259,10 @@ Features:
 
 - Automatic `.env` file loading using Node.js built-in `loadEnvFile()`
 - Helper function `envOrThrow()` for required environment variables
-- Type-safe configuration with `APIConfig` type
+- Type-safe configuration with nested structure
+- Organized separation of API and database config
 
-### 5. Database Schema
+### 7. Database Schema & Data Transformation
 
 The project now includes a PostgreSQL database schema using Drizzle ORM:
 
@@ -218,16 +275,39 @@ export const users = pgTable('users', {
         .notNull()
         .defaultNow()
         .$onUpdate(() => new Date()),
-    email: varchar('email', { length: 256 }).notNull().unique(),
+    email: varchar('email', { length: 255 }).notNull().unique(),
+});
+
+export const chirps = pgTable('chirps', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at')
+        .notNull()
+        .defaultNow()
+        .$onUpdate(() => new Date()),
+    body: varchar('body', { length: 140 }).notNull(),
+    user_id: uuid('user_id')
+        .references(() => users.id, { onDelete: 'cascade' })
+        .notNull(),
 });
 ```
 
-Features:
-
-- UUID primary keys for better distribution
+**Database Features:**
+- UUID primary keys for better distribution  
 - Automatic timestamp management
-- Unique email constraints
-- Type-safe insert operations with `NewUser` type
+- Foreign key relationships with cascade delete
+- Type-safe insert operations with `NewUser` and `NewChirp` types
+
+**Data Transformation:**
+The API transforms database snake_case to camelCase for responses:
+```typescript
+// Database returns: { user_id: "uuid" }
+// API responds with: { userId: "uuid" }
+const response = {
+    // ... other fields
+    userId: chirp.user_id, // Transform snake_case to camelCase
+};
+```
 
 ## 🔧 Configuration Files
 
@@ -259,27 +339,32 @@ Features:
 
 ## 🎓 Learning Exercises
 
-1. **Connect the database**: Create a database client and connect to PostgreSQL
-2. **Implement user registration**: Create a `POST /api/users` endpoint using the users table
-3. **Add chirps table**: Design and implement a chirps table with user relationships
-4. **Persist chirps**: Update the validate endpoint to save chirps to the database
-5. **Add authentication**: Implement JWT-based authentication for users
-6. **Create API for chirps**: Build full CRUD operations for chirps
-7. **Add more configuration**: Extend environment variables for JWT secrets, ports, etc.
+1. ✅ **Connect the database**: Create a database client and connect to PostgreSQL
+2. ✅ **Implement user registration**: Create a `POST /api/users` endpoint using the users table
+3. ✅ **Add chirps table**: Design and implement a chirps table with user relationships
+4. ✅ **Persist chirps**: Update the validate endpoint to save chirps to the database
+5. ✅ **Add automatic migrations**: Set up migrations to run on server startup
+6. **Add authentication**: Implement JWT-based authentication for users
+7. **Create full CRUD API**: Add GET endpoints for users and chirps
+8. **Add pagination**: Implement pagination for chirps list
+9. **Add filtering**: Filter chirps by user or date range
 
 ## 🚀 Next Steps
 
-With the database foundation in place, here's the development roadmap:
+With the core functionality complete, here's the development roadmap:
 
 ### Immediate Tasks
 
 - ✅ Set up environment variables for database credentials
-- Create database connection singleton
-- Integrate database operations into existing endpoints
-- Add chirps table to schema
+- ✅ Create database connection and queries
+- ✅ Integrate database operations into API endpoints
+- ✅ Add chirps table with user relationships
+- ✅ Implement automatic migrations
 
 ### Future Enhancements
 
+- **Authentication & Authorization**: JWT-based user authentication
+- **GET Endpoints**: Retrieve users and chirps with pagination
 - **Real-time updates**: WebSocket integration for live chirps
 - **File uploads**: Profile pictures and media attachments
 - **Social features**: Following, likes, and retweets
@@ -289,10 +374,12 @@ With the database foundation in place, here's the development roadmap:
 
 ## 📝 Development Notes
 
-- The server uses in-memory storage for metrics (resets on restart)
-- Profanity filter checks for: "kerfuffle", "sharbert", "fornax"
-- All responses include appropriate HTTP status codes
-- Error responses follow a consistent JSON format
+- **Database**: PostgreSQL with automatic migrations on server startup
+- **Profanity filter**: Replaces "kerfuffle", "sharbert", "fornax" with `****`
+- **Data format**: Database uses snake_case, API responses use camelCase
+- **Error handling**: Centralized error handler with proper HTTP status codes
+- **Metrics**: In-memory storage for file server hits (resets on restart)
+- **RESTful design**: All endpoints use pluralized resource names
 
 ## 🤝 Contributing
 
