@@ -3,6 +3,8 @@ import { BadRequestError, NotFoundError, UnauthorizedError } from './errors.js';
 import { getUserByEmail } from '../db/queries/users.js';
 import { Request, Response } from 'express';
 import { type NewUser } from '../db/schema.js';
+import { JwtPayload } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 export async function hashPassword(password: string): Promise<string> {
     const saltRounds = 10;
@@ -16,6 +18,48 @@ export async function verifyPassword(
 ): Promise<boolean> {
     const isValid = await bcrypt.compare(password, hash);
     return isValid;
+}
+
+export function makeJWT(
+    userId: string,
+    expiresIn: number,
+    secret: string,
+): string {
+    // iss is the issuer of the token.
+    // sub is the subject of the token = user id
+    // iat is the time the token was issued.
+    // exp is the time the token expires.
+
+    const iat = Math.floor(Date.now() / 1000); // get current time in seconds
+    const exp = iat + expiresIn;
+    const payload: Payload = {
+        iss: 'chirpy',
+        sub: userId,
+        iat: iat,
+        exp: exp,
+    };
+    const token = jwt.sign(payload, secret);
+    return token;
+}
+
+export function validateJWT(tokenString: string, secret: string): string {
+    try {
+        const payload = jwt.verify(tokenString, secret) as JwtPayload;
+
+        // Extract the user ID from the 'sub' field
+        if (!payload.sub || typeof payload.sub !== 'string') {
+            throw new UnauthorizedError('Invalid token: missing user ID');
+        }
+
+        return payload.sub; // Return the user's ID
+    } catch (error) {
+        if (error instanceof jwt.TokenExpiredError) {
+            throw new UnauthorizedError('Token has expired');
+        } else if (error instanceof jwt.JsonWebTokenError) {
+            throw new UnauthorizedError('Invalid token');
+        }
+        throw error;
+    }
 }
 
 export async function handlerLogin(req: Request, res: Response) {
@@ -37,3 +81,6 @@ export async function handlerLogin(req: Request, res: Response) {
     };
     res.status(200).json(userResponse);
 }
+
+//A JWT payload can have any key-value pair, but I used the Pick utility function to narrow the JwtPayload type down to the keys we care about:
+type Payload = Pick<JwtPayload, 'iss' | 'sub' | 'iat' | 'exp'>;

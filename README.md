@@ -95,7 +95,8 @@ ts-http-server/
 | Method | Endpoint | Description | Request Body | Response |
 |--------|----------|-------------|--------------|----------|
 | GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
-| POST | `/api/users` | Create a new user account | `{"email": "user@example.com"}` | `201` with user object |
+| POST | `/api/users` | Create a new user account | `{"email": "user@example.com", "password": "securePass123"}` | `201` with user object (password excluded) |
+| POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123"}` | `200` with user object or `401` if invalid |
 | POST | `/api/chirps` | Create a new chirp | `{"body": "Hello world!", "userId": "uuid"}` | `201` with chirp object |
 | GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
@@ -172,15 +173,29 @@ npm run db:migrate
 
 ## 💡 Key Features Explained
 
-### 1. User Management
+### 1. User Authentication & Management
 
-Create users with email validation:
+**User Registration** with secure password hashing:
 
 ```bash
 curl -X POST http://localhost:8080/api/users \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com"}'
+  -d '{"email": "user@example.com", "password": "securePassword123"}'
 ```
+
+**User Login** with credential verification:
+
+```bash
+curl -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "securePassword123"}'
+```
+
+**Security Features:**
+- Passwords hashed with bcrypt (10 salt rounds)
+- Hashed passwords never returned in API responses
+- Email uniqueness enforced at database level
+- Secure password comparison for login verification
 
 ### 2. Chirp Creation with Content Validation
 
@@ -215,13 +230,23 @@ The project implements a clean error handling pattern:
 class BadRequestError extends Error {
   statusCode = 400
 }
+class UnauthorizedError extends Error {
+  statusCode = 401  // Authentication failed
+}
 class ForbiddenError extends Error {
-  statusCode = 403
+  statusCode = 403  // Authorization failed
 }
 
 // Centralized error handler in api/errorHandler.ts
 app.use(errorHandler)
 ```
+
+**Error Types:**
+- **400 Bad Request**: Missing required fields, invalid input
+- **401 Unauthorized**: Invalid login credentials
+- **403 Forbidden**: Access denied (authorization)
+- **404 Not Found**: Resource doesn't exist
+- **500 Internal Server Error**: Unexpected server errors
 
 ### 4. Middleware Architecture
 
@@ -285,6 +310,9 @@ export const users = pgTable('users', {
         .defaultNow()
         .$onUpdate(() => new Date()),
     email: varchar('email', { length: 255 }).notNull().unique(),
+    hashedPassword: varchar('hashed_password', { length: 255 })
+        .notNull()
+        .default('unset'),
 });
 
 export const chirps = pgTable('chirps', {
@@ -340,7 +368,7 @@ const response = {
   - `dev`: Build and run
   - `db:generate`: Generate migrations from schema changes
   - `db:migrate`: Apply migrations to database
-- **Dependencies**: Express.js, Drizzle ORM, and PostgreSQL client
+- **Dependencies**: Express.js, Drizzle ORM, PostgreSQL client, and bcrypt for password hashing
 
 ### Drizzle Configuration (`drizzle.config.ts`)
 
@@ -358,7 +386,7 @@ const response = {
 4. ✅ **Persist chirps**: Update the validate endpoint to save chirps to the database
 5. ✅ **Add automatic migrations**: Set up migrations to run on server startup
 6. ✅ **Add GET endpoints for chirps**: Implement `GET /api/chirps` and `GET /api/chirps/:id`
-7. **Add authentication**: Implement JWT-based authentication for users
+7. ✅ **Add authentication**: Implement password hashing and login functionality
 8. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
 9. **Add pagination**: Implement pagination for chirps list
 10. **Add filtering**: Filter chirps by user or date range
@@ -377,8 +405,9 @@ With the core functionality complete, here's the development roadmap:
 
 ### Future Enhancements
 
-- **Authentication & Authorization**: JWT-based user authentication
+- **Session Management**: JWT tokens or session-based authentication
 - **User retrieval**: Add `GET /api/users` endpoint
+- **Password reset**: Email-based password reset functionality
 - **Pagination**: Add pagination support to chirps listing
 - **Real-time updates**: WebSocket integration for live chirps
 - **File uploads**: Profile pictures and media attachments
@@ -390,9 +419,11 @@ With the core functionality complete, here's the development roadmap:
 ## 📝 Development Notes
 
 - **Database**: PostgreSQL with automatic migrations on server startup
+- **Authentication**: bcrypt password hashing with 10 salt rounds
+- **Security**: Passwords never returned in API responses, unique email enforcement
 - **Profanity filter**: Replaces "kerfuffle", "sharbert", "fornax" with `****`
 - **Data format**: Database uses snake_case, API responses use camelCase
-- **Error handling**: Centralized error handler with proper HTTP status codes
+- **Error handling**: Centralized error handler with proper HTTP status codes (401, 403, etc.)
 - **Metrics**: In-memory storage for file server hits (resets on restart)
 - **RESTful design**: All endpoints use pluralized resource names
 
