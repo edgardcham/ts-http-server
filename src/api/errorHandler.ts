@@ -3,6 +3,7 @@ import {
     InternalServerError,
     NotFoundError,
     BadRequestError,
+    ForbiddenError,
 } from './errors.js';
 
 export async function errorHandler(
@@ -22,6 +23,10 @@ export async function errorHandler(
         });
     } else if (err instanceof InternalServerError) {
         res.status(500).json({
+            error: err.message,
+        });
+    } else if (err instanceof ForbiddenError) {
+        res.status(403).json({
             error: err.message,
         });
     } else {

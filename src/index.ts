@@ -5,7 +5,7 @@ import {
     middlewareMetricsInc,
 } from './api/middlewares.js';
 import { handlerReadiness } from './api/readiness.js';
-import { handlerValidateChirp } from './api/chirps.js';
+import { handlerCreateChirp } from './api/chirps.js';
 import { handlerMetrics, handlerResetMetrics } from './api/metrics.js';
 import { errorHandler } from './api/errorHandler.js';
 import { handlerAddUser } from './api/users.js';
@@ -33,13 +33,7 @@ app.get('/api/healthz', async (req, res, next) => {
         next(error);
     }
 });
-app.post('/api/validate_chirp', async (req, res, next) => {
-    try {
-        await handlerValidateChirp(req, res);
-    } catch (error) {
-        next(error);
-    }
-});
+
 app.get('/admin/metrics', async (req, res, next) => {
     try {
         await handlerMetrics(req, res);
@@ -52,17 +46,21 @@ app.post('/admin/reset', async (req, res, next) => {
         await handlerResetMetrics(req, res);
         await deleteAllUsers();
     } catch (error) {
-        if (error instanceof ForbiddenError) {
-            res.status(403).send(error.message);
-        } else {
-            next(error);
-        }
+        next(error);
     }
 });
 
 app.post('/api/users', async (req, res, next) => {
     try {
         await handlerAddUser(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/chirps', async (req, res, next) => {
+    try {
+        await handlerCreateChirp(req, res);
     } catch (error) {
         next(error);
     }

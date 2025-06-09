@@ -1,23 +1,14 @@
 import { Request, Response } from 'express';
 import { BadRequestError } from './errors.js';
+import { createChirp } from '../db/queries/chirps.js';
 
-export async function handlerValidateChirp(
+export async function handlerCreateChirp(
     req: Request,
     res: Response,
 ): Promise<void> {
-    type responseData = {
-        cleanedBody: string;
-        error?: string;
-    };
-
-    const { body } = req.body;
+    const { body, userId } = req.body;
     if (body.length > 140) {
         throw new BadRequestError('Chirp is too long. Max length is 140');
-        // const errorBody: responseData = {
-        //     cleanedBody: '',
-        //     error: 'Chirp is too long',
-        // };
-        // res.status(400).send(JSON.stringify(errorBody));
     } else {
         const strArray = body.split(' ');
         const cleanedArray = strArray.map((str: string) => {
@@ -32,10 +23,22 @@ export async function handlerValidateChirp(
         });
         const cleanedBody = cleanedArray.join(' ');
 
-        res.header('Content-Type', 'application/json');
-        const successBody: responseData = {
-            cleanedBody: cleanedBody,
+        const chirp = await createChirp({
+            body: cleanedBody,
+            user_id: userId,
+        });
+
+        // Transform the response to match the expected API format
+        const response = {
+            id: chirp.id,
+            createdAt: chirp.createdAt,
+            updatedAt: chirp.updatedAt,
+            body: chirp.body,
+            userId: chirp.user_id, // needed for test
         };
-        res.status(200).send(JSON.stringify(successBody));
+
+        res.header('Content-Type', 'application/json');
+
+        res.status(201).send(JSON.stringify(response));
     }
 }
