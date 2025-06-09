@@ -19,6 +19,7 @@ import postgres from 'postgres';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { ForbiddenError } from './api/errors.js';
+import { handlerLogin } from './api/auth.js';
 
 // Run database migrations automatically on startup
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -61,6 +62,14 @@ app.post('/api/users', async (req, res, next) => {
         next(error);
     }
 });
+
+app.post('/api/login', async(req, res, next) => {
+    try {
+        await handlerLogin(req, res);
+    } catch (error) {
+        next(error);
+    }
+})
 
 app.post('/api/chirps', async (req, res, next) => {
     try {

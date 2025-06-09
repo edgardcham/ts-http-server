@@ -97,6 +97,8 @@ ts-http-server/
 | GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
 | POST | `/api/users` | Create a new user account | `{"email": "user@example.com"}` | `201` with user object |
 | POST | `/api/chirps` | Create a new chirp | `{"body": "Hello world!", "userId": "uuid"}` | `201` with chirp object |
+| GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
+| GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
 
 ### Admin Endpoints
 
@@ -189,12 +191,19 @@ The `/api/chirps` endpoint demonstrates comprehensive input validation:
 - User ID validation (must exist in database)
 - JSON request/response handling
 
-**Example Request:**
+**Example Requests:**
 
 ```bash
+# Create a chirp
 curl -X POST http://localhost:8080/api/chirps \
   -H "Content-Type: application/json" \
   -d '{"body": "Hello world! This is my first chirp!", "userId": "user-uuid-here"}'
+
+# Get all chirps (ordered by creation date)
+curl http://localhost:8080/api/chirps
+
+# Get a specific chirp by ID
+curl http://localhost:8080/api/chirps/chirp-uuid-here
 ```
 
 ### 3. Custom Error Handling
@@ -293,13 +302,17 @@ export const chirps = pgTable('chirps', {
 ```
 
 **Database Features:**
-- UUID primary keys for better distribution  
+
+- UUID primary keys for better distribution
 - Automatic timestamp management
 - Foreign key relationships with cascade delete
 - Type-safe insert operations with `NewUser` and `NewChirp` types
+- Ordered queries (chirps sorted by creation date ascending)
+- Individual record retrieval by ID with proper error handling
 
 **Data Transformation:**
 The API transforms database snake_case to camelCase for responses:
+
 ```typescript
 // Database returns: { user_id: "uuid" }
 // API responds with: { userId: "uuid" }
@@ -334,7 +347,7 @@ const response = {
 - **Dialect**: PostgreSQL
 - **Schema**: Located at `./src/db/schema.ts`
 - **Migrations**: Output to `./src/db/migrations`
-- **Connection**: Uses `DB_URL` environment variable  
+- **Connection**: Uses `DB_URL` environment variable
 - **Environment**: Automatically loads `.env` file using Node.js `loadEnvFile()`
 
 ## 🎓 Learning Exercises
@@ -344,10 +357,11 @@ const response = {
 3. ✅ **Add chirps table**: Design and implement a chirps table with user relationships
 4. ✅ **Persist chirps**: Update the validate endpoint to save chirps to the database
 5. ✅ **Add automatic migrations**: Set up migrations to run on server startup
-6. **Add authentication**: Implement JWT-based authentication for users
-7. **Create full CRUD API**: Add GET endpoints for users and chirps
-8. **Add pagination**: Implement pagination for chirps list
-9. **Add filtering**: Filter chirps by user or date range
+6. ✅ **Add GET endpoints for chirps**: Implement `GET /api/chirps` and `GET /api/chirps/:id`
+7. **Add authentication**: Implement JWT-based authentication for users
+8. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
+9. **Add pagination**: Implement pagination for chirps list
+10. **Add filtering**: Filter chirps by user or date range
 
 ## 🚀 Next Steps
 
@@ -364,7 +378,8 @@ With the core functionality complete, here's the development roadmap:
 ### Future Enhancements
 
 - **Authentication & Authorization**: JWT-based user authentication
-- **GET Endpoints**: Retrieve users and chirps with pagination
+- **User retrieval**: Add `GET /api/users` endpoint
+- **Pagination**: Add pagination support to chirps listing
 - **Real-time updates**: WebSocket integration for live chirps
 - **File uploads**: Profile pictures and media attachments
 - **Social features**: Following, likes, and retweets
