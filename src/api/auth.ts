@@ -6,6 +6,12 @@ import { type NewUser } from '../db/schema.js';
 import { JwtPayload } from 'jsonwebtoken';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
+import crypto from 'node:crypto';
+import {
+    createRefreshToken,
+    getUserFromRefreshToken,
+    revokeRefreshToken,
+} from '../db/queries/tokens.js';
 
 export async function hashPassword(password: string): Promise<string> {
     const saltRounds = 10;
@@ -71,9 +77,13 @@ export function getBearerToken(req: Request): string {
     return authHeader.split(' ')[1];
 }
 
+export function makeRefreshToken(): string {
+    const token = crypto.randomBytes(32).toString('hex');
+    return token;
+}
+
 export async function handlerLogin(req: Request, res: Response) {
     const { email, password } = req.body;
-    let expiresIn = req.body.expiresIn;
     if (!email || !password) {
         throw new BadRequestError('Email and password are required');
     }
@@ -82,19 +92,63 @@ export async function handlerLogin(req: Request, res: Response) {
     if (!user || !isValid) {
         throw new UnauthorizedError('Incorrect email or password');
     }
-    if (!expiresIn || expiresIn > 3600 || expiresIn < 0) {
-        expiresIn = 3600;
-    }
+    // On successful login, create a new refresh token
+    const refreshToken = makeRefreshToken();
+    await createRefreshToken(refreshToken, user.id);
     const userResponse: UserResponse = {
         id: user.id,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
         email: user.email,
-        token: makeJWT(user.id, expiresIn, config.api.jwtSecret),
+        token: makeJWT(user.id, 3600, config.api.jwtSecret),
+        refreshToken: refreshToken,
     };
     res.status(200).json(userResponse);
 }
 
+export async function handlerRefresh(req: Request, res: Response) {
+    // Get REFRESH token from Authorization header (not a JWT!)
+    const refreshToken = getBearerToken(req);
+    if (!refreshToken) {
+        throw new UnauthorizedError('Missing refresh token');
+    }
+
+    // Look up the refresh token in the database
+    const refreshTokenRecord = await getUserFromRefreshToken(refreshToken);
+
+    // Check if token exists, is not expired, and is not revoked
+    if (
+        !refreshTokenRecord ||
+        refreshTokenRecord.expiresAt < new Date() ||
+        refreshTokenRecord.revokedAt !== null
+    ) {
+        throw new UnauthorizedError('Invalid refresh token');
+    }
+
+    // Create a new JWT access token for the user
+    const newAccessToken = makeJWT(
+        refreshTokenRecord.user_id,
+        3600,
+        config.api.jwtSecret,
+    );
+
+    res.status(200).json({ token: newAccessToken });
+}
+
+export async function handlerRevoke(req: Request, res: Response) {
+    // Get REFRESH token from Authorization header
+    const refreshToken = getBearerToken(req);
+
+    // Revoke the token in the database
+    await revokeRefreshToken(refreshToken);
+
+    // Return 204 No Content (successful but no response body)
+    res.status(204).send();
+}
+
 //A JWT payload can have any key-value pair, but I used the Pick utility function to narrow the JwtPayload type down to the keys we care about:
 type Payload = Pick<JwtPayload, 'iss' | 'sub' | 'iat' | 'exp'>;
-type UserResponse = Omit<NewUser, 'hashedPassword'> & { token: string };
+type UserResponse = Omit<NewUser, 'hashedPassword'> & {
+    token: string;
+    refreshToken: string;
+};

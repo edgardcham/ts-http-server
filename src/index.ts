@@ -19,11 +19,19 @@ import postgres from 'postgres';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { ForbiddenError } from './api/errors.js';
-import { handlerLogin } from './api/auth.js';
+import { handlerLogin, handlerRefresh, handlerRevoke } from './api/auth.js';
 
 // Run database migrations automatically on startup
 const migrationClient = postgres(config.db.url, { max: 1 });
-await migrate(drizzle(migrationClient), config.db.migrationConfig);
+try {
+    await migrate(drizzle(migrationClient), config.db.migrationConfig);
+    console.log('✅ Database migrations completed');
+} catch (error) {
+    console.error('❌ Database migration failed:', error);
+    process.exit(1);
+} finally {
+    await migrationClient.end();
+}
 
 const app = express();
 app.use(express.json());
@@ -49,7 +57,6 @@ app.get('/admin/metrics', async (req, res, next) => {
 app.post('/admin/reset', async (req, res, next) => {
     try {
         await handlerResetMetrics(req, res);
-        await deleteAllUsers();
     } catch (error) {
         next(error);
     }
@@ -63,13 +70,29 @@ app.post('/api/users', async (req, res, next) => {
     }
 });
 
-app.post('/api/login', async(req, res, next) => {
+app.post('/api/login', async (req, res, next) => {
     try {
         await handlerLogin(req, res);
     } catch (error) {
         next(error);
     }
-})
+});
+
+app.post('/api/refresh', async (req, res, next) => {
+    try {
+        await handlerRefresh(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/revoke', async (req, res, next) => {
+    try {
+        await handlerRevoke(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
 
 app.post('/api/chirps', async (req, res, next) => {
     try {

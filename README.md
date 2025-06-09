@@ -96,7 +96,9 @@ ts-http-server/
 |--------|----------|-------------|--------------|----------|
 | GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
 | POST | `/api/users` | Create a new user account | `{"email": "user@example.com", "password": "securePass123"}` | `201` with user object (password excluded) |
-| POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123", "expiresIn": 3600}` | `200` with user object and JWT token |
+| POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123"}` | `200` with user object, JWT token, and refresh token |
+| POST | `/api/refresh` | Get new access token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `200` with new JWT token |
+| POST | `/api/revoke` | Revoke refresh token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `204` No Content |
 | POST | `/api/chirps` | Create a new chirp (🔒 **Authenticated**) | `{"body": "Hello world!"}` + Authorization header | `201` with chirp object |
 | GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
@@ -196,23 +198,19 @@ curl -X POST http://localhost:8080/api/users \
 **User Login** with JWT token generation:
 
 ```bash
-# Basic login (1 hour expiration by default)
+# User login
 curl -X POST http://localhost:8080/api/login \
   -H "Content-Type: application/json" \
   -d '{"email": "user@example.com", "password": "securePassword123"}'
 
-# Login with custom expiration (max 1 hour = 3600 seconds)
-curl -X POST http://localhost:8080/api/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "password": "securePassword123", "expiresIn": 1800}'
-
-# Response includes JWT token:
+# Response includes both access token (JWT) and refresh token:
 # {
 #   "id": "user-uuid",
 #   "createdAt": "2023-07-01T00:00:00.000Z",
 #   "updatedAt": "2023-07-01T00:00:00.000Z",
 #   "email": "user@example.com",
-#   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+#   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+#   "refreshToken": "56aa826d22baab4b5ec2cea41a59ecbba03e542aedbb31d9b80326ac8ffcfa2a"
 # }
 ```
 
@@ -324,7 +322,111 @@ curl -X POST http://localhost:8080/api/chirps \
   -d '{"body": "Hello authenticated world!"}'
 ```
 
-### 4. Custom Error Handling
+### 4. Refresh Token System
+
+The application implements a comprehensive refresh token system for secure, long-term authentication. This allows users to stay logged in for extended periods while maintaining security through short-lived access tokens.
+
+#### **Session Store Design**
+
+Refresh tokens are stored in a database table rather than being stateless JWTs. This approach provides several advantages:
+- **Server-side validation**: Direct database lookup for token verification
+- **Immediate revocation**: Tokens can be invalidated instantly
+- **User association**: Each token is explicitly linked to a user account
+- **Audit trail**: Creation, expiration, and revocation timestamps
+
+#### **Refresh Token Database Schema**
+
+```typescript
+export const refreshTokens = pgTable('refresh_tokens', {
+    token: varchar('token', { length: 255 }).primaryKey(),        // Random 256-bit hex string
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    user_id: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    expiresAt: timestamp('expires_at').notNull(),                 // 60 days from creation
+    revokedAt: timestamp('revoked_at'),                           // null = active, timestamp = revoked
+});
+```
+
+**Schema Features:**
+- **Primary Key**: Token string itself serves as the primary key
+- **Foreign Key Cascade**: When a user is deleted, all refresh tokens are automatically removed
+- **Expiration Management**: Database-level timestamp tracking
+- **Revocation Support**: `revoked_at` field enables immediate token invalidation
+
+#### **Refresh Token Generation**
+
+```typescript
+export function makeRefreshToken(): string {
+    return crypto.randomBytes(32).toString('hex'); // 256-bit cryptographically secure random string
+}
+```
+
+**Technical Details:**
+- Uses Node.js built-in `crypto.randomBytes()` for cryptographic randomness
+- Generates 32 bytes (256 bits) of random data
+- Converts to hexadecimal string for storage and transmission
+- Results in 64-character hex string (32 bytes × 2 hex chars per byte)
+
+#### **Enhanced Login Response**
+
+```typescript
+// POST /api/login response includes both tokens
+{
+  "id": "user-uuid",
+  "createdAt": "2023-07-01T00:00:00.000Z",
+  "updatedAt": "2023-07-01T00:00:00.000Z",
+  "email": "user@example.com",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",        // JWT (1 hour)
+  "refreshToken": "56aa826d22baab4b5ec2cea41a59ecbba03e542aedbb31d9b80326ac8ffcfa2a"  // 60 days
+}
+```
+
+#### **Token Refresh Flow (POST /api/refresh)**
+
+```bash
+# Use refresh token to get new access token
+curl -X POST http://localhost:8080/api/refresh \
+  -H "Authorization: Bearer 56aa826d22baab4b5ec2cea41a59ecbba03e542aedbb31d9b80326ac8ffcfa2a"
+
+# Response with new JWT access token:
+# {
+#   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+# }
+```
+
+**Refresh Process:**
+1. Extract refresh token from `Authorization: Bearer <token>` header
+2. Database lookup to validate token exists and is not expired/revoked
+3. Generate new JWT access token for the associated user
+4. Return new access token (refresh token remains valid)
+
+#### **Token Revocation (POST /api/revoke)**
+
+```bash
+# Revoke a refresh token (logout)
+curl -X POST http://localhost:8080/api/revoke \
+  -H "Authorization: Bearer 56aa826d22baab4b5ec2cea41a59ecbba03e542aedbb31d9b80326ac8ffcfa2a"
+
+# Returns 204 No Content (successful revocation)
+```
+
+**Revocation Process:**
+1. Extract refresh token from Authorization header
+2. Update database record: set `revoked_at` to current timestamp
+3. Update `updated_at` timestamp for audit trail
+4. Return 204 No Content (successful, no response body)
+
+#### **Security Features**
+
+- **Token Separation**: Access tokens (JWT, 1 hour) vs refresh tokens (database, 60 days)
+- **Cryptographic Generation**: 256-bit random tokens using `crypto.randomBytes()`
+- **Database Validation**: Server-side token verification prevents tampering
+- **Immediate Revocation**: Database-based revocation for instant logout
+- **Cascade Deletion**: User deletion automatically cleans up all tokens
+- **Expiration Tracking**: Both creation and expiration timestamps stored
+- **Audit Trail**: Full lifecycle tracking (created, updated, revoked timestamps)
+
+### 5. Custom Error Handling
 
 The project implements a clean error handling pattern:
 
@@ -352,7 +454,7 @@ app.use(errorHandler)
 - **404 Not Found**: Resource doesn't exist
 - **500 Internal Server Error**: Unexpected server errors
 
-### 5. JWT Implementation Details
+### 6. JWT Implementation Details
 
 The project uses JSON Web Tokens for stateless authentication:
 
@@ -402,7 +504,7 @@ Three key middleware functions demonstrate different patterns:
 2. **`middlewareMetricsInc`** - Tracks page visits
 3. **`errorHandler`** - Centralized error handling
 
-### 6. Automatic Database Migrations
+### 7. Automatic Database Migrations
 
 Migrations run automatically when the server starts:
 
@@ -413,7 +515,7 @@ await migrate(drizzle(migrationClient), config.db.migrationConfig);
 console.log('✅ Database migrations completed');
 ```
 
-### 7. Configuration Management
+### 8. Configuration Management
 
 Enhanced configuration with environment variables in `config.ts`:
 
@@ -443,7 +545,7 @@ Features:
 - Type-safe configuration with nested structure
 - Organized separation of API and database config
 
-### 8. Database Schema & Data Transformation
+### 9. Database Schema & Data Transformation
 
 The project now includes a PostgreSQL database schema using Drizzle ORM:
 
@@ -580,10 +682,13 @@ describe('JWT Authentication', () => {
 9. ✅ **Add Bearer token extraction**: Implement `getBearerToken` function
 10. ✅ **Protect chirps endpoint**: Add JWT authentication to chirp creation
 11. ✅ **Token expiration handling**: Add configurable token expiration in login
-12. **Add authorization middleware**: Create reusable JWT middleware for multiple endpoints
-13. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
-14. **Add pagination**: Implement pagination for chirps list
-15. **Add filtering**: Filter chirps by user or date range
+12. ✅ **Add refresh token system**: Implement refresh token database and endpoints
+13. ✅ **Add token refresh**: Create `/api/refresh` endpoint for getting new access tokens
+14. ✅ **Add token revocation**: Create `/api/revoke` endpoint for logout functionality
+15. **Add authorization middleware**: Create reusable JWT middleware for multiple endpoints
+16. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
+17. **Add pagination**: Implement pagination for chirps list
+18. **Add filtering**: Filter chirps by user or date range
 
 ## 🚀 Next Steps
 
@@ -599,11 +704,11 @@ With the core functionality complete, here's the development roadmap:
 
 ### Future Enhancements
 
-- **Authorization Middleware**: JWT verification for protected endpoints
-- **Refresh Tokens**: Implement refresh token rotation for better security
+- **Authorization Middleware**: Reusable JWT middleware for protecting multiple endpoints
+- **Refresh Token Rotation**: Automatic refresh token rotation on each use
 - **User retrieval**: Add `GET /api/users` endpoint
 - **Password reset**: Email-based password reset functionality
-- **Token Revocation**: Implement JWT blacklist or token versioning
+- **Session Management**: Multiple device login tracking
 - **Pagination**: Add pagination support to chirps listing
 - **Real-time updates**: WebSocket integration for live chirps
 - **File uploads**: Profile pictures and media attachments
@@ -615,12 +720,14 @@ With the core functionality complete, here's the development roadmap:
 ## 📝 Development Notes
 
 - **Database**: PostgreSQL with automatic migrations on server startup
-- **Authentication**: Complete JWT-based authentication system
+- **Authentication**: Complete JWT + refresh token authentication system
   - bcrypt password hashing with 10 salt rounds
-  - JWT tokens with configurable expiration (max 1 hour)
+  - JWT access tokens (1 hour expiration) + refresh tokens (60 days)
   - Bearer token extraction from Authorization headers
   - User ID automatically extracted from JWT `sub` field
+  - Cryptographically secure refresh tokens (256-bit random)
 - **Protected Endpoints**: Chirp creation requires valid JWT authentication
+- **Token Management**: Database-stored refresh tokens with revocation support
 - **Security**: OpenSSL-generated JWT secrets, passwords never returned in responses
 - **Testing**: Vitest test suite for authentication functionality
 - **Profanity filter**: Replaces "kerfuffle", "sharbert", "fornax" with `****`

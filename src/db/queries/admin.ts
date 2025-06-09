@@ -1,5 +1,5 @@
 import { db } from '../index.js';
-import { users } from '../schema.js';
+import { users, refreshTokens } from '../schema.js';
 import { config } from '../../config.js';
 import { ForbiddenError } from '../../api/errors.js';
 

@@ -1,3 +1,4 @@
+import { deleteAllUsers } from '../db/queries/admin.js';
 import { config } from '../config.js';
 import { Request, Response } from 'express';
 
@@ -18,6 +19,7 @@ export async function handlerResetMetrics(
     req: Request,
     res: Response,
 ): Promise<void> {
+    await deleteAllUsers();
     config.api.fileServerHits = 0;
     res.set('Content-Type', 'text/plain; charset=utf-8');
     res.send('OK');
