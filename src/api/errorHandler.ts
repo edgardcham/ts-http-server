@@ -3,7 +3,7 @@ import {
     InternalServerError,
     NotFoundError,
     BadRequestError,
-} from 'src/api/errors.js';
+} from './errors.js';
 
 export async function errorHandler(
     err: Error,

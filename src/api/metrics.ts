@@ -1,4 +1,4 @@
-import { config } from 'src/config.js';
+import { config } from '../config.js';
 import { Request, Response } from 'express';
 
 export async function handlerMetrics(

@@ -8,10 +8,13 @@ import { handlerReadiness } from './api/readiness.js';
 import { handlerValidateChirp } from './api/chirps.js';
 import { handlerMetrics, handlerResetMetrics } from './api/metrics.js';
 import { errorHandler } from './api/errorHandler.js';
+import { handlerAddUser } from './api/users.js';
+import { deleteAllUsers } from './db/queries/admin.js';
 
 import postgres from 'postgres';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { ForbiddenError } from './api/errors.js';
 
 // Run database migrations automatically on startup
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -47,6 +50,19 @@ app.get('/admin/metrics', async (req, res, next) => {
 app.post('/admin/reset', async (req, res, next) => {
     try {
         await handlerResetMetrics(req, res);
+        await deleteAllUsers();
+    } catch (error) {
+        if (error instanceof ForbiddenError) {
+            res.status(403).send(error.message);
+        } else {
+            next(error);
+        }
+    }
+});
+
+app.post('/api/users', async (req, res, next) => {
+    try {
+        await handlerAddUser(req, res);
     } catch (error) {
         next(error);
     }
