@@ -96,8 +96,8 @@ ts-http-server/
 |--------|----------|-------------|--------------|----------|
 | GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
 | POST | `/api/users` | Create a new user account | `{"email": "user@example.com", "password": "securePass123"}` | `201` with user object (password excluded) |
-| POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123"}` | `200` with user object or `401` if invalid |
-| POST | `/api/chirps` | Create a new chirp | `{"body": "Hello world!", "userId": "uuid"}` | `201` with chirp object |
+| POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123", "expiresIn": 3600}` | `200` with user object and JWT token |
+| POST | `/api/chirps` | Create a new chirp (🔒 **Authenticated**) | `{"body": "Hello world!"}` + Authorization header | `201` with chirp object |
 | GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
 
@@ -157,7 +157,17 @@ First, create a `.env` file in the project root with all required environment va
 DB_URL=postgres://postgres:password@localhost:5432/chirpy
 PORT=8080
 PLATFORM=dev
+JWT_SECRET=your-super-secure-secret-here
 ```
+
+**Generate a secure JWT secret:**
+
+```bash
+# Use OpenSSL to generate a cryptographically secure 64-byte base64 secret
+openssl rand -base64 64
+```
+
+Copy the output and use it as your `JWT_SECRET` in the `.env` file. This ensures your JWT tokens are signed with a strong, random secret.
 
 Then run the database commands:
 
@@ -183,45 +193,138 @@ curl -X POST http://localhost:8080/api/users \
   -d '{"email": "user@example.com", "password": "securePassword123"}'
 ```
 
-**User Login** with credential verification:
+**User Login** with JWT token generation:
 
 ```bash
+# Basic login (1 hour expiration by default)
 curl -X POST http://localhost:8080/api/login \
   -H "Content-Type: application/json" \
   -d '{"email": "user@example.com", "password": "securePassword123"}'
+
+# Login with custom expiration (max 1 hour = 3600 seconds)
+curl -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "securePassword123", "expiresIn": 1800}'
+
+# Response includes JWT token:
+# {
+#   "id": "user-uuid",
+#   "createdAt": "2023-07-01T00:00:00.000Z",
+#   "updatedAt": "2023-07-01T00:00:00.000Z",
+#   "email": "user@example.com",
+#   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+# }
+```
+
+**JWT Authentication Lifecycle:**
+
+1. **User Authentication**: User submits email and password to `/api/login`
+2. **Token Generation**: Server validates credentials and creates JWT with user ID in `sub` field
+3. **Client Storage**: Client receives and stores JWT token
+4. **Authenticated Requests**: Client includes JWT in Authorization header for protected endpoints
+5. **Token Validation**: Server validates JWT on each authenticated request
+
+```bash
+# Example: Creating an authenticated chirp
+curl -X POST http://localhost:8080/api/chirps \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{"body": "Hello world! This is my authenticated chirp!"}'
 ```
 
 **Security Features:**
 - Passwords hashed with bcrypt (10 salt rounds)
+- JWT tokens with expiration timestamps
+- Secure token validation with signature verification
+- User ID stored in JWT `sub` field (subject)
 - Hashed passwords never returned in API responses
 - Email uniqueness enforced at database level
-- Secure password comparison for login verification
 
-### 2. Chirp Creation with Content Validation
+### 2. JWT Authentication Functions
 
-The `/api/chirps` endpoint demonstrates comprehensive input validation:
+The project implements several key authentication functions:
 
-- Maximum 140 characters
-- Profanity filtering (replaces inappropriate words with `****`)
-- User ID validation (must exist in database)
-- JSON request/response handling
+**`getBearerToken(req: Request): string`**
 
-**Example Requests:**
+Extracts JWT tokens from the Authorization header:
 
-```bash
-# Create a chirp
-curl -X POST http://localhost:8080/api/chirps \
-  -H "Content-Type: application/json" \
-  -d '{"body": "Hello world! This is my first chirp!", "userId": "user-uuid-here"}'
-
-# Get all chirps (ordered by creation date)
-curl http://localhost:8080/api/chirps
-
-# Get a specific chirp by ID
-curl http://localhost:8080/api/chirps/chirp-uuid-here
+```typescript
+export function getBearerToken(req: Request): string {
+    const authHeader = req.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        throw new UnauthorizedError('Missing or invalid authorization header');
+    }
+    return authHeader.split(' ')[1]; // Returns just the token string
+}
 ```
 
-### 3. Custom Error Handling
+**Enhanced Login Handler**
+
+Now generates JWT tokens with configurable expiration:
+
+```typescript
+export async function handlerLogin(req: Request, res: Response) {
+    const { email, password } = req.body;
+    let expiresIn = req.body.expiresIn;
+    
+    // Validate credentials...
+    
+    // Handle expiration (default 1 hour, max 1 hour)
+    if (!expiresIn || expiresIn > 3600 || expiresIn < 0) {
+        expiresIn = 3600;
+    }
+    
+    // Generate JWT and return user with token
+    const userResponse = {
+        // ...user fields,
+        token: makeJWT(user.id, expiresIn, config.api.jwtSecret)
+    };
+    res.status(200).json(userResponse);
+}
+```
+
+### 3. Authenticated Chirp Creation
+
+The `/api/chirps` endpoint is now **protected** and requires JWT authentication:
+
+```typescript
+export async function handlerCreateChirp(req: Request, res: Response) {
+    const { body } = req.body;
+    const token = getBearerToken(req);           // Extract JWT from header
+    const userId = validateJWT(token, config.api.jwtSecret); // Validate & get user ID
+    
+    // Chirp validation and creation...
+    const chirp = await createChirp({
+        body: cleanedBody,
+        user_id: userId  // User ID comes from validated JWT
+    });
+}
+```
+
+**Authentication Features:**
+
+- JWT token extraction from `Authorization: Bearer <token>` header
+- Automatic user identification from JWT `sub` field
+- No need to send `userId` in request body (extracted from token)
+- Comprehensive error handling for missing/invalid tokens
+
+**Example Authenticated Request:**
+
+```bash
+# Get JWT token from login
+TOKEN=$(curl -s -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "password"}' \
+  | jq -r '.token')
+
+# Use token to create chirp
+curl -X POST http://localhost:8080/api/chirps \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"body": "Hello authenticated world!"}'
+```
+
+### 4. Custom Error Handling
 
 The project implements a clean error handling pattern:
 
@@ -242,13 +345,56 @@ app.use(errorHandler)
 ```
 
 **Error Types:**
+
 - **400 Bad Request**: Missing required fields, invalid input
-- **401 Unauthorized**: Invalid login credentials
+- **401 Unauthorized**: Invalid login credentials, expired/invalid JWT
 - **403 Forbidden**: Access denied (authorization)
 - **404 Not Found**: Resource doesn't exist
 - **500 Internal Server Error**: Unexpected server errors
 
-### 4. Middleware Architecture
+### 5. JWT Implementation Details
+
+The project uses JSON Web Tokens for stateless authentication:
+
+```typescript
+// JWT token structure
+{
+  "iss": "chirpy",           // Issuer
+  "sub": "user-uuid-here",   // Subject (user ID)
+  "iat": 1699564800,         // Issued at (timestamp)
+  "exp": 1699651200          // Expiration (timestamp)
+}
+
+// Token creation (src/api/auth.ts)
+export function makeJWT(userId: string, expiresIn: number, secret: string): string {
+    const payload = {
+        iss: 'chirpy',
+        sub: userId,
+        iat: Math.floor(Date.now() / 1000),
+        exp: iat + expiresIn
+    };
+    return jwt.sign(payload, secret);
+}
+
+// Token validation (src/api/auth.ts)
+export function validateJWT(tokenString: string, secret: string): string {
+    const payload = jwt.verify(tokenString, secret);
+    return payload.sub; // Returns user ID
+}
+
+// Usage with config (secret from environment)
+const token = makeJWT(userId, 3600, config.api.jwtSecret);
+const userId = validateJWT(token, config.api.jwtSecret);
+```
+
+**JWT Security:**
+
+- JWT secret loaded from `JWT_SECRET` environment variable
+- Secret generated using `openssl rand -base64 64` for cryptographic strength
+- 512-bit (64-byte) secret provides strong signature security
+- Secret stored securely in `.env` file (never committed to version control)
+
+### 5. Middleware Architecture
 
 Three key middleware functions demonstrate different patterns:
 
@@ -256,7 +402,7 @@ Three key middleware functions demonstrate different patterns:
 2. **`middlewareMetricsInc`** - Tracks page visits
 3. **`errorHandler`** - Centralized error handling
 
-### 5. Automatic Database Migrations
+### 6. Automatic Database Migrations
 
 Migrations run automatically when the server starts:
 
@@ -267,7 +413,7 @@ await migrate(drizzle(migrationClient), config.db.migrationConfig);
 console.log('✅ Database migrations completed');
 ```
 
-### 6. Configuration Management
+### 7. Configuration Management
 
 Enhanced configuration with environment variables in `config.ts`:
 
@@ -281,6 +427,7 @@ export const config: Config = {
         fileServerHits: 0,
         port: Number(envOrThrow('PORT')),
         platform: envOrThrow('PLATFORM'),
+        jwtSecret: envOrThrow('JWT_SECRET'),
     },
     db: {
         url: envOrThrow('DB_URL'),
@@ -296,7 +443,7 @@ Features:
 - Type-safe configuration with nested structure
 - Organized separation of API and database config
 
-### 7. Database Schema & Data Transformation
+### 8. Database Schema & Data Transformation
 
 The project now includes a PostgreSQL database schema using Drizzle ORM:
 
@@ -368,7 +515,9 @@ const response = {
   - `dev`: Build and run
   - `db:generate`: Generate migrations from schema changes
   - `db:migrate`: Apply migrations to database
-- **Dependencies**: Express.js, Drizzle ORM, PostgreSQL client, and bcrypt for password hashing
+  - `test`: Run Vitest test suite
+- **Dependencies**: Express.js, Drizzle ORM, PostgreSQL client, bcrypt, and jsonwebtoken
+- **Dev Dependencies**: Vitest for testing, TypeScript definitions
 
 ### Drizzle Configuration (`drizzle.config.ts`)
 
@@ -377,6 +526,46 @@ const response = {
 - **Migrations**: Output to `./src/db/migrations`
 - **Connection**: Uses `DB_URL` environment variable
 - **Environment**: Automatically loads `.env` file using Node.js `loadEnvFile()`
+
+## 🧪 Testing
+
+The project includes a comprehensive test suite using Vitest:
+
+### Running Tests
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm run test -- --watch
+```
+
+### Test Coverage
+
+- **Authentication Tests** (`src/api/auth.test.ts`):
+  - Password hashing and verification
+  - JWT token creation and validation
+  - Token expiration handling
+  - Invalid token error handling
+
+### Example Test
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { makeJWT, validateJWT } from './auth';
+
+describe('JWT Authentication', () => {
+    it('should create and validate JWT tokens', () => {
+        const userId = 'user-123';
+        const secret = 'test-secret';
+        const token = makeJWT(userId, 3600, secret);
+        
+        const extractedId = validateJWT(token, secret);
+        expect(extractedId).toBe(userId);
+    });
+});
+```
 
 ## 🎓 Learning Exercises
 
@@ -387,9 +576,14 @@ const response = {
 5. ✅ **Add automatic migrations**: Set up migrations to run on server startup
 6. ✅ **Add GET endpoints for chirps**: Implement `GET /api/chirps` and `GET /api/chirps/:id`
 7. ✅ **Add authentication**: Implement password hashing and login functionality
-8. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
-9. **Add pagination**: Implement pagination for chirps list
-10. **Add filtering**: Filter chirps by user or date range
+8. ✅ **Add JWT tokens**: Implement JWT creation and validation with tests
+9. ✅ **Add Bearer token extraction**: Implement `getBearerToken` function
+10. ✅ **Protect chirps endpoint**: Add JWT authentication to chirp creation
+11. ✅ **Token expiration handling**: Add configurable token expiration in login
+12. **Add authorization middleware**: Create reusable JWT middleware for multiple endpoints
+13. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
+14. **Add pagination**: Implement pagination for chirps list
+15. **Add filtering**: Filter chirps by user or date range
 
 ## 🚀 Next Steps
 
@@ -405,9 +599,11 @@ With the core functionality complete, here's the development roadmap:
 
 ### Future Enhancements
 
-- **Session Management**: JWT tokens or session-based authentication
+- **Authorization Middleware**: JWT verification for protected endpoints
+- **Refresh Tokens**: Implement refresh token rotation for better security
 - **User retrieval**: Add `GET /api/users` endpoint
 - **Password reset**: Email-based password reset functionality
+- **Token Revocation**: Implement JWT blacklist or token versioning
 - **Pagination**: Add pagination support to chirps listing
 - **Real-time updates**: WebSocket integration for live chirps
 - **File uploads**: Profile pictures and media attachments
@@ -419,8 +615,14 @@ With the core functionality complete, here's the development roadmap:
 ## 📝 Development Notes
 
 - **Database**: PostgreSQL with automatic migrations on server startup
-- **Authentication**: bcrypt password hashing with 10 salt rounds
-- **Security**: Passwords never returned in API responses, unique email enforcement
+- **Authentication**: Complete JWT-based authentication system
+  - bcrypt password hashing with 10 salt rounds
+  - JWT tokens with configurable expiration (max 1 hour)
+  - Bearer token extraction from Authorization headers
+  - User ID automatically extracted from JWT `sub` field
+- **Protected Endpoints**: Chirp creation requires valid JWT authentication
+- **Security**: OpenSSL-generated JWT secrets, passwords never returned in responses
+- **Testing**: Vitest test suite for authentication functionality
 - **Profanity filter**: Replaces "kerfuffle", "sharbert", "fornax" with `****`
 - **Data format**: Database uses snake_case, API responses use camelCase
 - **Error handling**: Centralized error handler with proper HTTP status codes (401, 403, etc.)

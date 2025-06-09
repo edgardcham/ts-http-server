@@ -5,6 +5,7 @@ import { Request, Response } from 'express';
 import { type NewUser } from '../db/schema.js';
 import { JwtPayload } from 'jsonwebtoken';
 import jwt from 'jsonwebtoken';
+import { config } from '../config.js';
 
 export async function hashPassword(password: string): Promise<string> {
     const saltRounds = 10;
@@ -62,8 +63,17 @@ export function validateJWT(tokenString: string, secret: string): string {
     }
 }
 
+export function getBearerToken(req: Request): string {
+    const authHeader = req.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        throw new UnauthorizedError('Missing or invalid authorization header');
+    }
+    return authHeader.split(' ')[1];
+}
+
 export async function handlerLogin(req: Request, res: Response) {
     const { email, password } = req.body;
+    let expiresIn = req.body.expiresIn;
     if (!email || !password) {
         throw new BadRequestError('Email and password are required');
     }
@@ -72,15 +82,19 @@ export async function handlerLogin(req: Request, res: Response) {
     if (!user || !isValid) {
         throw new UnauthorizedError('Incorrect email or password');
     }
-    type userResponse = Omit<NewUser, 'hashedPassword'>;
-    const userResponse: userResponse = {
+    if (!expiresIn || expiresIn > 3600 || expiresIn < 0) {
+        expiresIn = 3600;
+    }
+    const userResponse: UserResponse = {
         id: user.id,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
         email: user.email,
+        token: makeJWT(user.id, expiresIn, config.api.jwtSecret),
     };
     res.status(200).json(userResponse);
 }
 
 //A JWT payload can have any key-value pair, but I used the Pick utility function to narrow the JwtPayload type down to the keys we care about:
 type Payload = Pick<JwtPayload, 'iss' | 'sub' | 'iat' | 'exp'>;
+type UserResponse = Omit<NewUser, 'hashedPassword'> & { token: string };
