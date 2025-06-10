@@ -36,6 +36,13 @@
       "when": 1749497580583,
       "tag": "0004_flashy_cerebro",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1749533555892,
+      "tag": "0005_narrow_slyde",
+      "breakpoints": true
     }
   ]
 }

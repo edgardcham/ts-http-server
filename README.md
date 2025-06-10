@@ -18,6 +18,8 @@ Chirpy is a full-featured social media API that handles user registration and "c
 - PostgreSQL schema design and migrations
 - Automatic database migrations
 - Type-safe database operations
+- Webhook integration for payment processing
+- Idempotent webhook handlers
 
 ## 📚 Learning Goals
 
@@ -101,9 +103,15 @@ ts-http-server/
 | POST | `/api/refresh` | Get new access token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `200` with new JWT token |
 | POST | `/api/revoke` | Revoke refresh token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `204` No Content |
 | POST | `/api/chirps` | Create a new chirp (🔒 **Authenticated**) | `{"body": "Hello world!"}` + Authorization header | `201` with chirp object |
-| GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
+| GET | `/api/chirps` | Get all chirps (ordered by creation date) | Optional query: `?authorId=uuid` | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
 | DELETE | `/api/chirps/:chirpId` | Delete own chirp (🔒 **Authenticated + Authorized**) | None + Authorization header | `204` No Content, `403` if not owner, `404` if not found |
+
+### Webhook Endpoints
+
+| Method | Endpoint | Description | Request Body | Response |
+|--------|----------|-------------|--------------|----------|
+| POST | `/api/polka/webhooks` | Process payment provider webhooks | See webhook format below | `204` No Content, `404` if user not found |
 
 ### Admin Endpoints
 
@@ -666,7 +674,187 @@ curl -X DELETE http://localhost:8080/api/chirps/other-users-chirp-id \
 - **Consistent Pattern**: Same authorization approach as user updates
 - **Defense in Depth**: Multiple checks (auth → existence → ownership → action)
 
-### 6. Custom Error Handling
+### 6. Webhook Integration: Polka Payment Provider
+
+The application integrates with "Polka", a payment provider for the **Chirpy Red** membership program. Webhooks enable automatic user upgrades when payments are processed.
+
+#### **What are Webhooks?**
+
+Webhooks are automated HTTP requests sent by external services when events occur. Unlike typical API requests initiated by users, webhooks are:
+- **Event-driven**: Triggered by external system events (e.g., successful payment)
+- **Automated**: No human interaction required
+- **Asynchronous**: Happen outside normal request/response flow
+
+#### **Chirpy Red Membership**
+
+Chirpy Red is a premium membership that provides enhanced features like editing chirps after posting. The membership status is tracked in the database:
+
+```typescript
+// Database schema addition
+export const users = pgTable('users', {
+    // ... existing fields
+    isChirpyRed: boolean('is_chirpy_red').notNull().default(false),
+});
+```
+
+#### **Webhook Implementation**
+
+```typescript
+export async function handlerPolkaWebhook(req: Request, res: Response) {
+    // 1. Verify webhook authenticity via API key
+    const apiKey = getAPIKey(req);
+    if (apiKey !== config.api.polkaWebhookSecret) {
+        throw new UnauthorizedError('Invalid API key');
+    }
+    
+    const { event, data } = req.body;
+    
+    // 2. Filter events - only process user.upgraded
+    if (event !== 'user.upgraded') {
+        res.status(204).send();
+        return;
+    }
+    
+    const userId = data.userId;
+    
+    // 3. Verify user exists
+    const user = await getUserById(userId);
+    if (!user) {
+        throw new NotFoundError('User not found in database');
+    }
+    
+    // 4. Idempotency check - prevent duplicate upgrades
+    if (user.isChirpyRed) {
+        res.status(204).send();  // Already upgraded, success (idempotent)
+        return;
+    }
+    
+    // 5. Upgrade user
+    await upgradeUser(userId);
+    res.status(204).send();
+}
+```
+
+#### **Webhook Request Format**
+
+```json
+POST /api/polka/webhooks
+{
+  "event": "user.upgraded",
+  "data": {
+    "userId": "3311741c-680c-4546-99f3-fc9efac2036c"
+  }
+}
+```
+
+#### **Idempotency: Critical for Webhooks**
+
+Idempotency ensures the same operation produces the same result regardless of how many times it's executed. This is crucial for webhooks because:
+- **Network failures** may cause retries
+- **Payment providers** often retry webhooks if they don't receive 2XX responses
+- **Duplicate events** can occur in distributed systems
+
+**Implementation Strategy:**
+```typescript
+// Check if already upgraded BEFORE upgrading
+if (user.isChirpyRed) {
+    res.status(204).send();  // Success - already in desired state
+    return;
+}
+```
+
+#### **Response Codes**
+
+- **204 No Content**: Success (including when already upgraded)
+- **404 Not Found**: User doesn't exist
+- **2XX codes**: Tell Polka the webhook was received successfully
+- **Non-2XX codes**: Trigger Polka to retry the webhook
+
+#### **User Response Updates**
+
+All endpoints returning user data now include the membership status:
+
+```typescript
+type UserResponse = {
+    id: string;
+    email: string;
+    createdAt: Date;
+    updatedAt: Date;
+    isChirpyRed: boolean;  // New field in all user responses
+}
+```
+
+**Example Response:**
+```json
+{
+  "id": "user-uuid",
+  "email": "premium@example.com",
+  "createdAt": "2023-07-01T00:00:00.000Z",
+  "updatedAt": "2023-07-01T00:00:00.000Z",
+  "isChirpyRed": true
+}
+```
+
+#### **Security Considerations**
+
+- **API Key Authentication**: Webhooks are authenticated using a shared secret API key
+- **Event Filtering**: Only process known events (`user.upgraded`)
+- **Graceful Handling**: Return success for unknown events to prevent retries
+- **Database Integrity**: User existence verified before upgrade
+- **Idempotent Design**: Safe to retry without side effects
+
+### 7. Query Parameters & Filtering
+
+The `GET /api/chirps` endpoint demonstrates how to implement optional query parameter filtering for resource lists.
+
+#### **Author Filtering Implementation**
+
+```typescript
+export async function handlerGetAllChirps(req: Request, res: Response) {
+    const authorId = req.query.authorId as string | undefined;
+    const chirps = await getAllChirps(authorId);
+    res.status(200).send(JSON.stringify(chirps));
+}
+
+// Database query with optional filtering
+export async function getAllChirps(authorId?: string) {
+    const result = await db
+        .select()
+        .from(chirps)
+        .where(authorId ? eq(chirps.userId, authorId) : undefined)
+        .orderBy(asc(chirps.createdAt));
+    return result;
+}
+```
+
+**Usage Examples:**
+
+```bash
+# Get all chirps (no filtering)
+curl http://localhost:8080/api/chirps
+
+# Get chirps by specific author
+curl "http://localhost:8080/api/chirps?authorId=3311741c-680c-4546-99f3-fc9efac2036c"
+```
+
+**API Design Principles:**
+
+- **Optional Parameters**: Query parameters are optional - endpoint works with or without them
+- **Conditional Filtering**: Database query only applies filter when parameter is provided
+- **Consistent Ordering**: Results always ordered by creation date regardless of filtering
+- **Type Safety**: TypeScript ensures proper parameter handling
+
+**Why Document Query Parameters:**
+
+Query parameters are particularly important to document because:
+- **Not Obvious**: Unlike REST paths, query parameters aren't discoverable from the URL structure
+- **Optional Behavior**: Developers need to know what happens when parameters are omitted
+- **Data Types**: Need to specify expected parameter format (UUID, string, number, etc.)
+- **Multiple Options**: List endpoints often support various filtering and sorting options
+
+This implementation follows the principle: **"First Be Obvious, Then Document It Anyway"** - the parameter name `authorId` is descriptive, and documentation clarifies the exact behavior.
+
+### 8. Custom Error Handling
 
 The project implements a clean error handling pattern:
 
@@ -925,10 +1113,14 @@ describe('JWT Authentication', () => {
 12. ✅ **Add refresh token system**: Implement refresh token database and endpoints
 13. ✅ **Add token refresh**: Create `/api/refresh` endpoint for getting new access tokens
 14. ✅ **Add token revocation**: Create `/api/revoke` endpoint for logout functionality
-15. **Add authorization middleware**: Create reusable JWT middleware for multiple endpoints
-16. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
-17. **Add pagination**: Implement pagination for chirps list
-18. **Add filtering**: Filter chirps by user or date range
+15. ✅ **Add user update authorization**: Implement `PUT /api/users` with ownership verification
+16. ✅ **Add chirp deletion authorization**: Implement `DELETE /api/chirps/:id` with ownership checks
+17. ✅ **Add webhook integration**: Implement Polka payment webhooks for Chirpy Red upgrades
+18. ✅ **Add idempotent webhook handler**: Ensure webhook safety with duplicate request handling
+19. **Add authorization middleware**: Create reusable JWT middleware for multiple endpoints
+20. **Add GET endpoint for users**: Implement `GET /api/users` endpoint
+21. **Add pagination**: Implement pagination for chirps list
+22. **Add filtering**: Filter chirps by user or date range
 
 ## 🚀 Next Steps
 

@@ -14,13 +14,12 @@ import {
 import { handlerMetrics, handlerResetMetrics } from './api/metrics.js';
 import { errorHandler } from './api/errorHandler.js';
 import { handlerAddUser, handlerUpdateUser } from './api/users.js';
-import { deleteAllUsers } from './db/queries/admin.js';
 
 import postgres from 'postgres';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { ForbiddenError } from './api/errors.js';
 import { handlerLogin, handlerRefresh, handlerRevoke } from './api/auth.js';
+import { handlerPolkaWebhook } from './api/webhooks.js';
 
 // Run database migrations automatically on startup
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -130,6 +129,14 @@ app.get('/api/chirps/:chirpId', async (req, res, next) => {
 app.delete('/api/chirps/:chirpId', async (req, res, next) => {
     try {
         await handlerDeleteChirp(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/polka/webhooks', async (req, res, next) => {
+    try {
+        await handlerPolkaWebhook(req, res);
     } catch (error) {
         next(error);
     }

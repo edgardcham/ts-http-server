@@ -35,26 +35,18 @@ export async function handlerCreateChirp(
 
         const chirp = await createChirp({
             body: cleanedBody,
-            user_id: userId,
+            userId: userId,
         });
-
-        // Transform the response to match the expected API format
-        const response = {
-            id: chirp.id,
-            createdAt: chirp.createdAt,
-            updatedAt: chirp.updatedAt,
-            body: chirp.body,
-            userId: chirp.user_id, // needed for test
-        };
 
         res.header('Content-Type', 'application/json');
 
-        res.status(201).send(JSON.stringify(response));
+        res.status(201).send(JSON.stringify(chirp));
     }
 }
 
 export async function handlerGetAllChirps(req: Request, res: Response) {
-    const chirps = await getAllChirps();
+    const authorId = req.query.authorId as string | undefined;
+    const chirps = await getAllChirps(authorId);
     res.status(200).send(JSON.stringify(chirps));
 }
 
@@ -74,7 +66,7 @@ export async function handlerDeleteChirp(req: Request, res: Response) {
     const chirp = await getChirpById(chirpId);
     if (!chirp) {
         throw new NotFoundError('Chirp not found');
-    } else if (chirp.user_id !== userId) {
+    } else if (chirp.userId !== userId) {
         throw new ForbiddenError('You are not allowed to delete this chirp');
     }
     await deleteChirp(chirpId, userId);

@@ -77,6 +77,13 @@ export function getBearerToken(req: Request): string {
     return authHeader.split(' ')[1];
 }
 
+export function getAPIKey(req: Request): string {
+    const authHeader = req.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('ApiKey ')) {
+        throw new UnauthorizedError('Missing or invalid authorization header');
+    }
+    return authHeader.split(' ')[1];
+}
 export function makeRefreshToken(): string {
     const token = crypto.randomBytes(32).toString('hex');
     return token;
@@ -101,6 +108,7 @@ export async function handlerLogin(req: Request, res: Response) {
         updatedAt: user.updatedAt,
         email: user.email,
         token: makeJWT(user.id, 3600, config.api.jwtSecret),
+        isChirpyRed: user.isChirpyRed,
         refreshToken: refreshToken,
     };
     res.status(200).json(userResponse);
