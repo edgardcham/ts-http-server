@@ -62,29 +62,34 @@ Through this project, you'll learn:
 ts-http-server/
 ├── src/                  # Source code
 │   ├── api/             # API handlers and middleware
-│   │   ├── chirps.ts    # Chirp creation endpoint
-│   │   ├── users.ts     # User management endpoint
-│   │   ├── errorHandler.ts # Centralized error handling
-│   │   ├── errors.ts    # Custom error classes
-│   │   ├── metrics.ts   # Admin metrics handlers
-│   │   ├── middlewares.ts # Request logging and metrics
+│   │   ├── auth.ts      # JWT authentication & refresh token handlers
+│   │   ├── auth.test.ts # Authentication function tests (Vitest)
+│   │   ├── chirps.ts    # Chirp CRUD endpoints with filtering & sorting
+│   │   ├── users.ts     # User registration & update endpoints
+│   │   ├── webhooks.ts  # Polka payment webhook handler
+│   │   ├── errorHandler.ts # Centralized error handling middleware
+│   │   ├── errors.ts    # Custom error classes (400, 401, 403, 404)
+│   │   ├── metrics.ts   # Admin metrics & reset handlers
+│   │   ├── middlewares.ts # Request logging and metrics middleware
 │   │   └── readiness.ts # Health check endpoint
 │   ├── app/             # Static web assets
 │   │   ├── assets/      # Images and static resources
+│   │   │   └── logo.png
 │   │   └── index.html   # Welcome page
 │   ├── db/              # Database layer
-│   │   ├── schema.ts    # Drizzle ORM schema definitions
-│   │   ├── index.ts     # Database connection
+│   │   ├── schema.ts    # Drizzle ORM schema (users, chirps, refreshTokens)
+│   │   ├── index.ts     # Database connection & client setup
 │   │   ├── migrations/  # Auto-generated migration files
 │   │   └── queries/     # Database query functions
-│   │       ├── users.ts
-│   │       ├── chirps.ts
-│   │       └── admin.ts
-│   ├── config.ts        # Enhanced configuration with env vars
-│   └── index.ts         # Main server entry point
+│   │       ├── users.ts   # User CRUD operations
+│   │       ├── chirps.ts  # Chirp CRUD with filtering & sorting
+│   │       ├── tokens.ts  # Refresh token management
+│   │       └── admin.ts   # Admin operations (reset, delete all)
+│   ├── config.ts        # Environment-based configuration
+│   └── index.ts         # Main server entry point with auto-migrations
 ├── dist/                # Compiled JavaScript (generated)
 ├── drizzle.config.ts    # Drizzle ORM configuration
-├── package.json         # Project configuration
+├── package.json         # Project dependencies & scripts
 └── tsconfig.json        # TypeScript configuration
 ```
 
@@ -103,7 +108,7 @@ ts-http-server/
 | POST | `/api/refresh` | Get new access token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `200` with new JWT token |
 | POST | `/api/revoke` | Revoke refresh token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `204` No Content |
 | POST | `/api/chirps` | Create a new chirp (🔒 **Authenticated**) | `{"body": "Hello world!"}` + Authorization header | `201` with chirp object |
-| GET | `/api/chirps` | Get all chirps (ordered by creation date) | Optional query: `?authorId=uuid` | `200` with array of chirp objects |
+| GET | `/api/chirps` | Get all chirps with optional filtering and sorting | Optional queries: `?authorId=uuid&sort=asc\|desc` | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
 | DELETE | `/api/chirps/:chirpId` | Delete own chirp (🔒 **Authenticated + Authorized**) | None + Authorization header | `204` No Content, `403` if not owner, `404` if not found |
 
@@ -803,26 +808,29 @@ type UserResponse = {
 - **Database Integrity**: User existence verified before upgrade
 - **Idempotent Design**: Safe to retry without side effects
 
-### 7. Query Parameters & Filtering
+### 7. Query Parameters: Filtering & Sorting
 
-The `GET /api/chirps` endpoint demonstrates how to implement optional query parameter filtering for resource lists.
+The `GET /api/chirps` endpoint demonstrates how to implement optional query parameters for filtering and sorting resource lists.
 
-#### **Author Filtering Implementation**
+#### **Filtering and Sorting Implementation**
 
 ```typescript
 export async function handlerGetAllChirps(req: Request, res: Response) {
     const authorId = req.query.authorId as string | undefined;
-    const chirps = await getAllChirps(authorId);
+    const sort = req.query.sort as string | undefined;
+    const chirps = await getAllChirps(authorId, sort);
     res.status(200).send(JSON.stringify(chirps));
 }
 
-// Database query with optional filtering
-export async function getAllChirps(authorId?: string) {
+// Database query with optional filtering and sorting
+export async function getAllChirps(authorId?: string, sort?: string) {
+    const orderBy = sort === 'desc' ? desc(chirps.createdAt) : asc(chirps.createdAt);
+    
     const result = await db
         .select()
         .from(chirps)
         .where(authorId ? eq(chirps.userId, authorId) : undefined)
-        .orderBy(asc(chirps.createdAt));
+        .orderBy(orderBy);
     return result;
 }
 ```
@@ -830,18 +838,28 @@ export async function getAllChirps(authorId?: string) {
 **Usage Examples:**
 
 ```bash
-# Get all chirps (no filtering)
+# Get all chirps (default: ascending by creation date)
 curl http://localhost:8080/api/chirps
 
 # Get chirps by specific author
 curl "http://localhost:8080/api/chirps?authorId=3311741c-680c-4546-99f3-fc9efac2036c"
+
+# Get all chirps sorted by newest first
+curl "http://localhost:8080/api/chirps?sort=desc"
+
+# Get specific author's chirps, newest first
+curl "http://localhost:8080/api/chirps?authorId=3311741c-680c-4546-99f3-fc9efac2036c&sort=desc"
+
+# Get all chirps sorted by oldest first (explicit)
+curl "http://localhost:8080/api/chirps?sort=asc"
 ```
 
 **API Design Principles:**
 
 - **Optional Parameters**: Query parameters are optional - endpoint works with or without them
 - **Conditional Filtering**: Database query only applies filter when parameter is provided
-- **Consistent Ordering**: Results always ordered by creation date regardless of filtering
+- **Sensible Defaults**: `sort=asc` is default when no sort parameter provided
+- **Parameter Combination**: Multiple query parameters can be used together
 - **Type Safety**: TypeScript ensures proper parameter handling
 
 **Why Document Query Parameters:**
@@ -852,7 +870,21 @@ Query parameters are particularly important to document because:
 - **Data Types**: Need to specify expected parameter format (UUID, string, number, etc.)
 - **Multiple Options**: List endpoints often support various filtering and sorting options
 
-This implementation follows the principle: **"First Be Obvious, Then Document It Anyway"** - the parameter name `authorId` is descriptive, and documentation clarifies the exact behavior.
+#### **Sorting Query Parameter**
+
+The `sort` parameter demonstrates common API sorting patterns:
+
+**Supported Values:**
+- `asc` - Sort by creation date, oldest first (default)
+- `desc` - Sort by creation date, newest first
+
+**Implementation Benefits:**
+- **Database-level sorting**: More efficient than in-memory sorting for large datasets
+- **Consistent behavior**: Always sorts by `createdAt` field
+- **Graceful fallback**: Invalid sort values default to `asc`
+- **Future extensibility**: Easy to add more sort fields or options
+
+This implementation follows the principle: **"First Be Obvious, Then Document It Anyway"** - parameter names like `authorId` and `sort` are descriptive, and documentation clarifies the exact behavior.
 
 ### 8. Custom Error Handling
 

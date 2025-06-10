@@ -46,7 +46,8 @@ export async function handlerCreateChirp(
 
 export async function handlerGetAllChirps(req: Request, res: Response) {
     const authorId = req.query.authorId as string | undefined;
-    const chirps = await getAllChirps(authorId);
+    const sort = req.query.sort as string | undefined;
+    const chirps = await getAllChirps(authorId, sort);
     res.status(200).send(JSON.stringify(chirps));
 }
 
