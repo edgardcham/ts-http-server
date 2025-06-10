@@ -1,8 +1,9 @@
 import { Request, Response } from 'express';
-import { createUser } from '../db/queries/users.js';
+import { createUser, updateUser } from '../db/queries/users.js';
 import { BadRequestError } from './errors.js';
-import { hashPassword } from './auth.js';
+import { hashPassword, validateJWT, getBearerToken } from './auth.js';
 import { type NewUser } from '../db/schema.js';
+import { config } from '../config.js';
 
 export async function handlerAddUser(
     req: Request,
@@ -10,8 +11,6 @@ export async function handlerAddUser(
 ): Promise<void> {
     try {
         const { email, password } = req.body;
-        console.log('email', email);
-        console.log('password', password);
         if (!email || !password) {
             throw new BadRequestError('Email and password are required');
         }
@@ -23,7 +22,6 @@ export async function handlerAddUser(
             throw new BadRequestError('Email already exists');
         }
 
-        type UserResponse = Omit<NewUser, 'hashedPassword'>; // Omits the hashedPassword field from the User type
         const userResponse: UserResponse = {
             id: user.id,
             createdAt: user.createdAt,
@@ -37,3 +35,26 @@ export async function handlerAddUser(
         throw error;
     }
 }
+
+export async function handlerUpdateUser(req: Request, res: Response) {
+    const token = getBearerToken(req);
+    const userId = validateJWT(token, config.api.jwtSecret);
+    const { email, password } = req.body;
+    if (!email || !password) {
+        throw new BadRequestError('Email and password are required');
+    }
+    const hashedPassword = await hashPassword(password);
+    const user = await updateUser(userId, { email, hashedPassword });
+    if (!user) {
+        throw new BadRequestError('User not found');
+    }
+    const userResponse: UserResponse = {
+        id: user.id,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+        email: user.email,
+    };
+    res.status(200).json(userResponse);
+}
+
+type UserResponse = Omit<NewUser, 'hashedPassword'>;

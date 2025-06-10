@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
-import { BadRequestError, NotFoundError } from './errors.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from './errors.js';
 import {
     createChirp,
     getAllChirps,
     getChirpById,
+    deleteChirp,
 } from '../db/queries/chirps.js';
 import { getBearerToken, validateJWT } from './auth.js';
 import { config } from '../config.js';
@@ -64,4 +65,18 @@ export async function handlerGetChirpById(req: Request, res: Response) {
         throw new NotFoundError('Chirp not found');
     }
     res.status(200).send(JSON.stringify(chirp));
+}
+
+export async function handlerDeleteChirp(req: Request, res: Response) {
+    const chirpId = req.params.chirpId;
+    const token = getBearerToken(req);
+    const userId = validateJWT(token, config.api.jwtSecret);
+    const chirp = await getChirpById(chirpId);
+    if (!chirp) {
+        throw new NotFoundError('Chirp not found');
+    } else if (chirp.user_id !== userId) {
+        throw new ForbiddenError('You are not allowed to delete this chirp');
+    }
+    await deleteChirp(chirpId, userId);
+    res.status(204).send();
 }

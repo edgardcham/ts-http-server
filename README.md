@@ -96,12 +96,14 @@ ts-http-server/
 |--------|----------|-------------|--------------|----------|
 | GET | `/api/healthz` | Health check endpoint | None | `200 OK` |
 | POST | `/api/users` | Create a new user account | `{"email": "user@example.com", "password": "securePass123"}` | `201` with user object (password excluded) |
+| PUT | `/api/users` | Update own user account (🔒 **Authenticated**) | `{"email": "new@example.com", "password": "newPass123"}` + Authorization header | `200` with updated user object |
 | POST | `/api/login` | Authenticate user login | `{"email": "user@example.com", "password": "securePass123"}` | `200` with user object, JWT token, and refresh token |
 | POST | `/api/refresh` | Get new access token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `200` with new JWT token |
 | POST | `/api/revoke` | Revoke refresh token (🔒 **Refresh Token**) | None + Authorization header with refresh token | `204` No Content |
 | POST | `/api/chirps` | Create a new chirp (🔒 **Authenticated**) | `{"body": "Hello world!"}` + Authorization header | `201` with chirp object |
 | GET | `/api/chirps` | Get all chirps (ordered by creation date) | None | `200` with array of chirp objects |
 | GET | `/api/chirps/:chirpId` | Get a specific chirp by ID | None | `200` with chirp object or `404` if not found |
+| DELETE | `/api/chirps/:chirpId` | Delete own chirp (🔒 **Authenticated + Authorized**) | None + Authorization header | `204` No Content, `403` if not owner, `404` if not found |
 
 ### Admin Endpoints
 
@@ -426,7 +428,245 @@ curl -X POST http://localhost:8080/api/revoke \
 - **Expiration Tracking**: Both creation and expiration timestamps stored
 - **Audit Trail**: Full lifecycle tracking (created, updated, revoked timestamps)
 
-### 5. Custom Error Handling
+#### **Refresh Token Security: Bearer Header Approach**
+
+This implementation sends refresh tokens via `Authorization: Bearer <refreshToken>` headers for the `/api/refresh` and `/api/revoke` endpoints.
+
+**✅ When This Approach Works Well:**
+- **Mobile Applications**: iOS/Android apps where HTTP-only cookies aren't available
+- **Desktop Applications**: Electron, Tauri, or native apps
+- **API Clients**: Command line tools, Postman, or server-to-server communication
+- **Cross-Origin SPAs**: When cookies face CORS restrictions
+
+**🌐 Alternative for Web Applications:**
+For browser-based web applications, **HTTP-only cookies** are the gold standard:
+
+```javascript
+// Web app alternative: HTTP-only cookie approach
+app.post('/api/refresh', (req, res) => {
+    const refreshToken = req.cookies.refreshToken; // From HTTP-only cookie
+    // ... validation logic
+    res.json({ token: newAccessToken });
+});
+
+// Set refresh token as HTTP-only cookie on login
+res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,    // Prevents JavaScript access (XSS protection)
+    secure: true,      // HTTPS only
+    sameSite: 'strict' // CSRF protection
+});
+```
+
+**🔄 Refresh Token Lifecycle & Rotation:**
+
+**Current Implementation: Create New on Login**
+```typescript
+// Current: Creates new refresh token, but doesn't revoke old ones
+export async function handlerLogin(req: Request, res: Response) {
+    // ... authentication logic
+    const refreshToken = makeRefreshToken();
+    await createRefreshToken(refreshToken, user.id);  // Creates new token
+    // Old tokens remain valid until they expire
+}
+```
+
+**🔄 Alternative: Revoke-and-Replace on Login (Not Yet Implemented)**
+```typescript
+// Enhanced approach: Delete old refresh tokens on new login
+export async function handlerLogin(req: Request, res: Response) {
+    // ... authentication logic
+    
+    // 1. Revoke all existing refresh tokens for this user
+    await revokeAllUserRefreshTokens(user.id);
+    
+    // 2. Create new refresh token
+    const refreshToken = makeRefreshToken();
+    await createRefreshToken(refreshToken, user.id);
+    
+    // Result: Only the latest login session remains valid
+}
+```
+
+**Trade-offs:**
+
+**Current Approach (Multiple Valid Tokens):**
+- ✅ **Multi-device support**: User can be logged in on phone + laptop simultaneously
+- ✅ **Simple implementation**: No complex token management
+- ⚠️ **Security**: Old tokens remain valid if device is lost/stolen
+- ⚠️ **Token accumulation**: Tokens build up until they expire
+
+**Revoke-and-Replace Approach:**
+- ✅ **Enhanced security**: Only latest login session is valid
+- ✅ **Automatic cleanup**: No token accumulation
+- ⚠️ **Single session**: Logging in on new device invalidates all other devices
+- ⚠️ **UX impact**: Users get logged out from other devices unexpectedly
+
+**🔄 Advanced: Refresh Token Rotation on /api/refresh (Not Implemented)**
+```typescript
+// Each refresh call returns NEW refresh token and invalidates old one
+export async function handlerRefresh(req: Request, res: Response) {
+    const oldRefreshToken = getBearerToken(req);
+    
+    // 1. Validate and get user from old token
+    const user = await getUserFromRefreshToken(oldRefreshToken);
+    
+    // 2. Revoke the old refresh token
+    await revokeRefreshToken(oldRefreshToken);
+    
+    // 3. Create new refresh token
+    const newRefreshToken = makeRefreshToken();
+    await createRefreshToken(newRefreshToken, user.id);
+    
+    // 4. Return both new access token AND new refresh token
+    res.json({
+        token: makeJWT(user.id, 3600, config.api.jwtSecret),
+        refreshToken: newRefreshToken  // Client must store this new token
+    });
+}
+```
+
+**Recommendation**: Current approach is appropriate for learning. Production systems often implement revoke-and-replace on login for better security.
+
+**Current Implementation Verdict**: ✅ **Appropriate** for non-web applications and learning purposes. For production web apps, consider HTTP-only cookies.
+
+### 5. Authorization: User Self-Management
+
+While **authentication** verifies *who* a user is, **authorization** verifies *what* a user is allowed to do. The application implements resource-level authorization to ensure users can only modify their own data.
+
+#### **PUT /api/users - Update Own Account**
+
+The `PUT /api/users` endpoint demonstrates authorization in action:
+
+```typescript
+export async function handlerUpdateUser(req: Request, res: Response) {
+    // 1. Authentication: Extract and validate JWT token
+    const token = getBearerToken(req);
+    const userId = validateJWT(token, config.api.jwtSecret);
+    
+    // 2. Get new email and password from request
+    const { email, password } = req.body;
+    if (!email || !password) {
+        throw new BadRequestError('Email and password are required');
+    }
+    
+    // 3. Authorization: User can only update their OWN account
+    // The userId from JWT determines which record gets updated
+    const hashedPassword = await hashPassword(password);
+    const user = await updateUser(userId, { email, hashedPassword });
+    
+    // 4. Return updated user (password excluded)
+    res.status(200).json(userResponse);
+}
+```
+
+**Authorization Logic:**
+- **Token Extraction**: `getBearerToken()` extracts JWT from Authorization header
+- **User Identification**: `validateJWT()` returns the user ID from token's `sub` field
+- **Self-Service Only**: Update query uses the authenticated user's ID, not a user ID from the request
+- **No Privilege Escalation**: Users cannot update other users' accounts
+
+**Security Features:**
+- **JWT-Based Identity**: User identity comes from validated token, not request parameters
+- **Database-Level Protection**: Update query filters by authenticated user's ID
+- **Password Hashing**: New passwords are properly hashed before storage
+- **Response Sanitization**: Password field omitted from response
+
+**Example Usage:**
+
+```bash
+# Get JWT token from login
+TOKEN=$(curl -s -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "oldPassword"}' \
+  | jq -r '.token')
+
+# Update own account details
+curl -X PUT http://localhost:8080/api/users \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"email": "newemail@example.com", "password": "newSecurePassword123"}'
+
+# Response: Updated user object (password excluded)
+# {
+#   "id": "user-uuid",
+#   "createdAt": "2023-07-01T00:00:00.000Z", 
+#   "updatedAt": "2023-07-01T00:01:30.000Z",  // Updated timestamp
+#   "email": "newemail@example.com"           // New email
+# }
+```
+
+**Authorization Principles Applied:**
+- **Resource Ownership**: Users can only modify resources they own
+- **Token-Based Identity**: Authorization decisions based on authenticated identity
+- **Principle of Least Privilege**: No ability to modify other users' accounts
+- **Secure by Default**: Authorization logic prevents unauthorized access attempts
+
+#### **DELETE /api/chirps/:chirpId - Delete Own Chirps**
+
+The chirp deletion endpoint demonstrates proper authorization with ownership verification:
+
+```typescript
+export async function handlerDeleteChirp(req: Request, res: Response) {
+    // 1. Authentication: Extract and validate JWT token
+    const chirpId = req.params.chirpId;
+    const token = getBearerToken(req);
+    const userId = validateJWT(token, config.api.jwtSecret);
+    
+    // 2. Existence Check: Verify chirp exists (404 if not found)
+    const chirp = await getChirpById(chirpId);
+    if (!chirp) {
+        throw new NotFoundError('Chirp not found');
+    }
+    
+    // 3. Authorization: Verify ownership (403 if not owner)
+    if (chirp.user_id !== userId) {
+        throw new ForbiddenError('You are not allowed to delete this chirp');
+    }
+    
+    // 4. Perform Action: Delete the chirp
+    await deleteChirp(chirpId, userId);
+    res.status(204).send();  // No Content - successful deletion
+}
+```
+
+**Authorization Pattern:**
+- **Check Before Action**: Always verify permissions before performing deletions
+- **Clear Error Distinction**: 404 for "not found" vs 403 for "not authorized"
+- **Ownership Verification**: Compare chirp's `user_id` with authenticated user's ID
+- **No Information Leakage**: Same 404 error whether chirp doesn't exist or user can't see it
+
+**Example Usage:**
+
+```bash
+# Create a chirp
+TOKEN=$(curl -s -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "password"}' \
+  | jq -r '.token')
+
+CHIRP_ID=$(curl -s -X POST http://localhost:8080/api/chirps \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"body": "This chirp will be deleted"}' \
+  | jq -r '.id')
+
+# Delete own chirp (success - returns 204)
+curl -X DELETE http://localhost:8080/api/chirps/$CHIRP_ID \
+  -H "Authorization: Bearer $TOKEN"
+
+# Try to delete another user's chirp (fails - returns 403)
+curl -X DELETE http://localhost:8080/api/chirps/other-users-chirp-id \
+  -H "Authorization: Bearer $TOKEN"
+# Error: {"error": "You are not allowed to delete this chirp"}
+```
+
+**Security Benefits:**
+- **Prevents Unauthorized Deletion**: Users cannot delete other users' content
+- **Audit Trail**: All deletions tied to authenticated user
+- **Consistent Pattern**: Same authorization approach as user updates
+- **Defense in Depth**: Multiple checks (auth → existence → ownership → action)
+
+### 6. Custom Error Handling
 
 The project implements a clean error handling pattern:
 

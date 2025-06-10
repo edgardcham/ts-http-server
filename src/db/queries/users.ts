@@ -18,3 +18,12 @@ export async function getUserByEmail(email: string) {
         .where(eq(users.email, email));
     return result;
 }
+
+export async function updateUser(userId: string, user: Partial<NewUser>) {
+    const [result] = await db
+        .update(users)
+        .set(user)
+        .where(eq(users.id, userId))
+        .returning();
+    return result;
+}

@@ -9,10 +9,11 @@ import {
     handlerCreateChirp,
     handlerGetAllChirps,
     handlerGetChirpById,
+    handlerDeleteChirp,
 } from './api/chirps.js';
 import { handlerMetrics, handlerResetMetrics } from './api/metrics.js';
 import { errorHandler } from './api/errorHandler.js';
-import { handlerAddUser } from './api/users.js';
+import { handlerAddUser, handlerUpdateUser } from './api/users.js';
 import { deleteAllUsers } from './db/queries/admin.js';
 
 import postgres from 'postgres';
@@ -70,6 +71,14 @@ app.post('/api/users', async (req, res, next) => {
     }
 });
 
+app.put('/api/users', async (req, res, next) => {
+    try {
+        await handlerUpdateUser(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.post('/api/login', async (req, res, next) => {
     try {
         await handlerLogin(req, res);
@@ -113,6 +122,14 @@ app.get('/api/chirps', async (req, res, next) => {
 app.get('/api/chirps/:chirpId', async (req, res, next) => {
     try {
         await handlerGetChirpById(req, res);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.delete('/api/chirps/:chirpId', async (req, res, next) => {
+    try {
+        await handlerDeleteChirp(req, res);
     } catch (error) {
         next(error);
     }
